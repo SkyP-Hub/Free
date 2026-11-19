@@ -14,7 +14,7 @@
         telepon, bank, wrench pull/kick/ban) tidak dibuat.
 ]]
 
-local VERSION = "1.3"
+local VERSION = "1.4"
 
 local G = (getgenv and getgenv()) or _G
 if type(G.SkyPProxy) == "table" and type(G.SkyPProxy.stop) == "function" then
@@ -714,6 +714,48 @@ local function say(msg)
 end
 
 -- =====================================================================
+-- v1.4: HITUNG GEMS
+-- =====================================================================
+-- Tiap kali game menambah gems (fungsi addGems, dipanggil saat gems dipungut) jumlahnya dihitung.
+-- Angka melayang di layar selama hitung gems nyala.
+local GemHook = { tbl = nil, orig = nil, mine = nil }
+local gemLabel -- dibuat di bagian UI
+local function gemPaint()
+    if not gemLabel then return end
+    gemLabel.Visible = P.alive and P.GemsOn
+    gemLabel.Text = "💎 Gems terkumpul: " .. tostring(P.GemsGot)
+end
+local function hookGems()
+    local g = Ref.Gems
+    if not g or GemHook.tbl == g then return end
+    local orig = rawget(g, "addGems")
+    if type(orig) ~= "function" then return end
+    local mine = function(...)
+        if P.alive and P.GemsOn then
+            for i = 1, math.min(select("#", ...), 3) do
+                local a = select(i, ...)
+                if type(a) == "number" then
+                    if a > 0 then
+                        P.GemsGot += a
+                        task.defer(gemPaint)
+                    end
+                    break
+                end
+            end
+        end
+        return orig(...)
+    end
+    if pcall(function() g.addGems = mine end) then
+        GemHook.tbl, GemHook.orig, GemHook.mine = g, orig, mine
+    end
+end
+local function unhookGems()
+    local g = GemHook.tbl
+    if g and rawget(g, "addGems") == GemHook.mine then pcall(function() g.addGems = GemHook.orig end) end
+    GemHook.tbl = nil
+end
+
+-- =====================================================================
 -- PERINTAH
 -- =====================================================================
 local CMDS, HELP = {}, {}
@@ -840,24 +882,26 @@ add({ "locks" }, "Hoster", "/locks", "Jumlah lock di tas", function()
     say(("WL %d | DL %d | BGL %d | total %s"):format(invCount(242), invCount(1796), invCount(7188), wlText(total)))
 end)
 
-add({ "gems" }, "Gems", "/gems", "Mulai / berhenti hitung gems terkumpul", function()
+add({ "gems" }, "Gems", "/gems", "Mulai / berhenti hitung gems terkumpul (angka tampil di layar)", function()
+    hookGems()
     if not P.GemsOn then
-        local g = gemsNow()
-        if not g then return say("Angka gems belum terbaca") end
-        P.GemsOn, P.Gems0, P.GemsGot = true, g, 0
-        say("Hitung gems mulai (sekarang " .. g .. ")")
+        P.GemsOn, P.GemsGot = true, 0
+        P.Gems0 = (not GemHook.tbl) and gemsNow() or nil -- cadangan kalau addGems tidak bisa dibungkus
+        gemPaint()
+        say("Hitung gems mulai" .. (GemHook.tbl and "" or " (mode cadangan)"))
     else
-        local g = gemsNow()
-        if g and P.Gems0 then P.GemsGot = g - P.Gems0 end
         P.GemsOn = false
+        gemPaint()
         say("Hitung gems berhenti: terkumpul " .. P.GemsGot .. " gems")
     end
 end)
+add({ "rgems", "resetgems" }, "Gems", "/rgems", "Nolkan hitungan gems", function()
+    P.GemsGot = 0
+    if not GemHook.tbl then P.Gems0 = gemsNow() end
+    gemPaint()
+    say("Hitungan gems dinolkan")
+end)
 add({ "sg" }, "Gems", "/sg", "Kirim jumlah gems terkumpul ke chat world", function()
-    if P.GemsOn then
-        local g = gemsNow()
-        if g and P.Gems0 then P.GemsGot = g - P.Gems0 end
-    end
     local ch = worldChannel()
     if not ch then return say("Chat world belum ada (masuk world dulu)") end
     pcall(ch.SendAsync, ch, "Collected : " .. P.GemsGot .. " gems")
@@ -1275,6 +1319,14 @@ local mini = new("TextButton", { Size = UDim2.fromOffset(44, 44), Position = UDi
     Visible = false, AutoButtonColor = true }, gui)
 corner(mini, 22)
 grad(mini)
+gemLabel = new("TextLabel", { Size = UDim2.fromOffset(210, 30), Position = UDim2.new(0.5, -105, 0, 70),
+    BackgroundColor3 = C.bg, BackgroundTransparency = 0.15, TextColor3 = C.text, Font = Enum.Font.GothamBold,
+    TextSize = 14, Text = "", Visible = false }, gui)
+corner(gemLabel, 8)
+do
+    local st = new("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 1.2 }, gemLabel)
+    grad(st)
+end
 btnMin.MouseButton1Click:Connect(function() main.Visible = false mini.Visible = true end)
 mini.MouseButton1Click:Connect(function() main.Visible = true mini.Visible = false end)
 
@@ -1298,6 +1350,7 @@ local function draggable(handle, target)
 end
 draggable(header, main)
 draggable(mini, mini)
+draggable(gemLabel, gemLabel)
 
 -- =====================================================================
 -- MULAI / TUTUP
@@ -1309,6 +1362,7 @@ function P.stop()
     Input.active = false
     unhookMove()
     unhookNet()
+    unhookGems()
     for _, c in ipairs(P.conns) do pcall(function() c:Disconnect() end) end
     pcall(function() gui:Destroy() end)
     if G.SkyPProxy == P then G.SkyPProxy = nil end
@@ -1317,9 +1371,9 @@ btnClose.MouseButton1Click:Connect(P.stop)
 
 task.spawn(function()
     while P.alive do
-        if P.GemsOn and P.Gems0 then
+        if P.GemsOn and P.Gems0 and not GemHook.tbl then -- mode cadangan saja
             local g = gemsNow()
-            if g then P.GemsGot = g - P.Gems0 end
+            if g then P.GemsGot = g - P.Gems0 gemPaint() end
         end
         paintStatus()
         task.wait(1)
@@ -1331,6 +1385,7 @@ task.spawn(function()
     connect()
     hookMove()
     hookNet()
+    hookGems()
     if not P.alive then return end
     subTitle.Text = "v" .. VERSION .. " · " .. (worldName() or "Growblox")
     say(Ref.World and "Siap. Ketik /proxy di chat untuk daftar perintah"
