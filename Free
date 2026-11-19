@@ -14,7 +14,7 @@
         telepon, bank, wrench pull/kick/ban) tidak dibuat.
 ]]
 
-local VERSION = "1.1"
+local VERSION = "1.2"
 
 local G = (getgenv and getgenv()) or _G
 if type(G.SkyPProxy) == "table" and type(G.SkyPProxy.stop) == "function" then
@@ -59,7 +59,7 @@ local floor, abs = math.floor, math.abs
 -- =====================================================================
 -- MENCARI MODUL & DATA GAME
 -- =====================================================================
-local Mod = { Menu = nil, Inventory = nil }
+local Mod = { Menu = nil, Inventory = nil, Net = nil }
 local Ref = { World = nil, Inv = nil, State = nil, Gems = nil, Hud = nil }
 local ItemDB = {}
 
@@ -118,7 +118,9 @@ local function scanModules()
     for _, m in ipairs(mods) do
         local ok, v = pcall(require, m)
         if ok and type(v) == "table" then
-            if not Mod.Menu and isFn(v, "isDown") and field(v, "KEYS") ~= nil then
+            if not Mod.Net and isFn(v, "call") and type(field(v, "act")) == "table" and type(field(v, "tile")) == "table" then
+                Mod.Net = v -- v1.2: modul paket game (ByteNet): chat dikirim lewat sini sebelum jadi buffer
+            elseif not Mod.Menu and isFn(v, "isDown") and field(v, "KEYS") ~= nil then
                 Mod.Menu = v
             elseif not Mod.Inventory and isFn(v, "room") and isFn(v, "used") and isFn(v, "count") and isFn(v, "add")
                 and isFn(v, "new") then
@@ -251,7 +253,7 @@ local function refsText()
     local function s(v) return v and "OK" or "TIDAK" end
     return ("World %s | Tas %s | Posisi %s | Drop %s | Gems %s | Gerak %s | Item %d"):format(
         s(Ref.World), s(Ref.Inv), s(Ref.State), s(Ref.Hud and rawget(Ref.Hud, "onDrop")), s(Ref.Gems),
-        s(Mod.Menu), itemCount())
+        s(Mod.Menu), itemCount()) .. " | Net " .. s(Mod.Net) .. " (" .. tostring(P.NetHooks or 0) .. " jalur)"
 end
 
 -- =====================================================================
@@ -1003,6 +1005,80 @@ do
 end
 
 -- =====================================================================
+-- v1.2: CEGAT CHAT DI MODUL NET GAME
+-- =====================================================================
+-- Chat Growblox dikirim lewat paket ByteNet (RemoteEvent berisi buffer), jadi teksnya tidak terbaca
+-- di FireServer. Yang dibungkus: Net.call(nama, ...) dan semua paket yang punya fungsi send (Net.x.send,
+-- Net.act.x.send). Argumen teks yang cocok dengan perintah -> ditahan & dijalankan, tidak dikirim.
+local NetOrig = {} -- { tabel, kunci, fungsi asli, fungsi kita }
+local function netCheck(label, ...)
+    if not P.alive then return false end
+    local n = select("#", ...)
+    for i = 1, math.min(n, 6) do
+        local a = select(i, ...)
+        if type(a) == "string" and P.On and parse(a) then
+            P.ChatVia = label .. " (argumen " .. i .. ")"
+            task.spawn(run, a)
+            return true
+        end
+    end
+    if P.Sniff and #P.SniffLog < 40 then
+        local hasText = false
+        local parts = {}
+        for i = 1, math.min(n, 5) do
+            local a = select(i, ...)
+            local ta = typeof(a)
+            if ta == "string" then hasText = true end
+            parts[#parts + 1] = ta == "string" and ('"' .. string.sub(a, 1, 40) .. '"')
+                or (ta == "number" or ta == "boolean") and tostring(a) or ta
+        end
+        if hasText then
+            local seen = P.SniffSeen[label] or 0
+            if seen < 3 then
+                P.SniffSeen[label] = seen + 1
+                table.insert(P.SniffLog, label .. "(" .. table.concat(parts, ", ") .. ")")
+            end
+        end
+    end
+    return false
+end
+local function wrapFn(tbl, key, label)
+    local orig = rawget(tbl, key)
+    if type(orig) ~= "function" then return end
+    for _, e in ipairs(NetOrig) do if e[1] == tbl and e[2] == key then return end end
+    local mine = function(...)
+        if netCheck(label, ...) then return nil end
+        return orig(...)
+    end
+    local ok = pcall(function() tbl[key] = mine end)
+    if ok then NetOrig[#NetOrig + 1] = { tbl, key, orig, mine } end
+end
+local function hookNet()
+    local N = Mod.Net
+    if not N then return end
+    wrapFn(N, "call", "Net.call")
+    local function scan(t, path, depth)
+        for k, v in pairs(t) do
+            if type(v) == "table" and type(k) == "string" then
+                if type(rawget(v, "send")) == "function" then
+                    wrapFn(v, "send", path .. "." .. k .. ".send")
+                elseif depth < 2 then
+                    scan(v, path .. "." .. k, depth + 1)
+                end
+            end
+        end
+    end
+    pcall(scan, N, "Net", 0)
+    P.NetHooks = #NetOrig
+end
+local function unhookNet()
+    for _, e in ipairs(NetOrig) do
+        pcall(function() if rawget(e[1], e[2]) == e[4] then e[1][e[2]] = e[3] end end)
+    end
+    table.clear(NetOrig)
+end
+
+-- =====================================================================
 -- ISI MENU
 -- =====================================================================
 card(pgCtl, "Cara pakai", "Ketik perintah di chat game, contoh <b>/w 10</b> atau <b>/pay 150</b>. "
@@ -1027,6 +1103,7 @@ button(pgCtl, "Hubungkan ulang ke game", function()
         Ref.World, Ref.Inv, Ref.State, Ref.Gems, Ref.Hud = nil, nil, nil, nil, nil
         connect()
         hookMove()
+        hookNet()
         say(Ref.World and "Terhubung" or "World belum ketemu (masuk world dulu)")
     end)
 end)
@@ -1165,6 +1242,7 @@ function P.stop()
     release()
     Input.active = false
     unhookMove()
+    unhookNet()
     for _, c in ipairs(P.conns) do pcall(function() c:Disconnect() end) end
     pcall(function() gui:Destroy() end)
     if G.SkyPProxy == P then G.SkyPProxy = nil end
@@ -1186,6 +1264,7 @@ task.spawn(function()
     paintStatus()
     connect()
     hookMove()
+    hookNet()
     if not P.alive then return end
     subTitle.Text = "v" .. VERSION .. " · " .. (worldName() or "Growblox")
     say(Ref.World and (P.Hooked and "Siap. Ketik /help di chat" or "Siap. Hook chat tidak tersedia, pakai kotak perintah")
