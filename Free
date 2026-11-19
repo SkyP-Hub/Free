@@ -14,7 +14,7 @@
         telepon, bank, wrench pull/kick/ban) tidak dibuat.
 ]]
 
-local VERSION = "1.2"
+local VERSION = "1.3"
 
 local G = (getgenv and getgenv()) or _G
 if type(G.SkyPProxy) == "table" and type(G.SkyPProxy.stop) == "function" then
@@ -679,13 +679,15 @@ local pgDbg = makePage("Debug")
 local _, statusText = card(pgCtl, "Status", "Menghubungkan ke game...")
 local _, logText = card(pgLog, "Hasil terakhir", "-")
 
+local ChatBox -- v1.3: diisi di bagian "BACA KOTAK CHAT GAME"
 local function esc(t)
     return (tostring(t):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
 
 local function paintStatus()
-    statusText.Text = ("Perintah chat : <b>%s</b>\nHook chat : %s\nPajak : %s%%   ·   Dijalankan : %d\nTerakhir : %s\n<font color=\"#969EB4\">%s</font>"):format(
+    statusText.Text = ("Perintah chat : <b>%s</b>\nKotak chat game : %s\nHook chat : %s\nPajak : %s%%   ·   Dijalankan : %d\nTerakhir : %s\n<font color=\"#969EB4\">%s</font>"):format(
         P.On and "NYALA" or "MATI",
+        (ChatBox and ChatBox.tb) and "<font color=\"#5ADC8C\">OK</font>" or "<font color=\"#F05A64\">belum ketemu</font>",
         P.Hooked and "<font color=\"#5ADC8C\">OK</font>" or ("<font color=\"#F05A64\">tidak tersedia</font>"
             .. (P.HookErr and (" (" .. P.HookErr .. ")") or "")),
         tostring(P.Tax), P.Ran, esc(P.Last), refsText())
@@ -910,7 +912,7 @@ add({ "stop" }, "Lainnya", "/stop", "Hentikan jalan otomatis", function()
     Input.active = false
     say("Dihentikan")
 end)
-add({ "help", "cmd", "proxy" }, "Lainnya", "/help", "Buka daftar perintah", function()
+add({ "proxy", "ph", "cmd" }, "Lainnya", "/proxy", "Buka daftar perintah SkyP Proxy (/help milik game)", function()
     main.Visible = true
     showPage("Perintah")
     say("Daftar perintah dibuka di menu SkyP Proxy")
@@ -935,7 +937,11 @@ end
 
 local function run(msg)
     local fn, args, name = parse(msg)
-    if not fn then return say("Perintah tidak dikenal: " .. tostring(msg) .. "  (/help)") end
+    if not fn then return say("Perintah tidak dikenal: " .. tostring(msg) .. "  (/proxy)") end
+    -- v1.3: perintah yang sama bisa tertangkap 2 jalur (kotak chat + Net): jalankan sekali saja
+    local now = os.clock()
+    if P.LastMsg == msg and now - (P.LastAt or 0) < 1 then return end
+    P.LastMsg, P.LastAt = msg, now
     if P.Busy then return say("Tunggu, perintah sebelumnya belum selesai") end
     if not Ref.World then return say("Belum terhubung ke game (tekan Hubungkan ulang)") end
     P.Busy = true
@@ -1079,11 +1085,70 @@ local function unhookNet()
 end
 
 -- =====================================================================
+-- v1.3: BACA KOTAK CHAT GAME
+-- =====================================================================
+-- Growblox memproses perintah "/" sendiri di kotak chat (perintah tak dikenal hanya memunculkan
+-- "Unknown command" di layar sendiri, tidak dikirim). Jadi teks kotak chat dibaca langsung:
+-- saat pesan dikirim (Enter / tombol kirim) dan isinya perintah SkyP Proxy -> dijalankan.
+ChatBox = { tb = nil, conns = {}, last = "", lostAt = 0 }
+local function chatBoxUnbind()
+    for _, c in ipairs(ChatBox.conns) do pcall(function() c:Disconnect() end) end
+    table.clear(ChatBox.conns)
+    ChatBox.tb = nil
+end
+local function chatBoxFire(text)
+    if P.alive and P.On and parse(text) then
+        P.ChatVia = "kotak chat game"
+        run(text)
+    end
+end
+local function chatBoxBind(tb)
+    chatBoxUnbind()
+    ChatBox.tb = tb
+    ChatBox.last = tb.Text
+    table.insert(ChatBox.conns, tb:GetPropertyChangedSignal("Text"):Connect(function()
+        local t = tb.Text
+        if t == "" and ChatBox.last ~= "" and (not tb:IsFocused() or os.clock() - ChatBox.lostAt < 0.6) then
+            chatBoxFire(ChatBox.last) -- dikosongkan game setelah terkirim (Enter / tombol kirim)
+        end
+        if t ~= "" then ChatBox.last = t end
+    end))
+    table.insert(ChatBox.conns, tb.FocusLost:Connect(function(enter)
+        ChatBox.lostAt = os.clock()
+        if enter then chatBoxFire(ChatBox.last) end
+    end))
+    table.insert(ChatBox.conns, tb.Focused:Connect(function() ChatBox.last = tb.Text end))
+end
+local function chatBoxFind()
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg then return nil end
+    local best
+    for _, o in ipairs(pg:GetDescendants()) do
+        if o:IsA("TextBox") and not o:IsDescendantOf(gui) then
+            local ph = string.lower(o.PlaceholderText or "")
+            if string.find(ph, "message", 1, true) or string.find(ph, "chat", 1, true) then return o end
+            if not best and o:FindFirstAncestor("ChatGui") then best = o end
+        end
+    end
+    return best
+end
+task.spawn(function()
+    while P.alive do
+        if not (ChatBox.tb and ChatBox.tb.Parent) then
+            local tb = chatBoxFind()
+            if tb then chatBoxBind(tb) end
+        end
+        task.wait(2)
+    end
+    chatBoxUnbind()
+end)
+
+-- =====================================================================
 -- ISI MENU
 -- =====================================================================
 card(pgCtl, "Cara pakai", "Ketik perintah di chat game, contoh <b>/w 10</b> atau <b>/pay 150</b>. "
-    .. "Perintah tidak terkirim ke server (pemain lain tidak melihat). Kalau hook chat tidak tersedia, "
-    .. "ketik di kotak perintah di bawah.")
+    .. "Daftar perintah: <b>/proxy</b> (/help membuka perintah bawaan game). "
+    .. "Game mungkin menulis \"Unknown command\" (hanya kamu yang lihat), perintah tetap dijalankan.")
 toggle(pgCtl, "Perintah chat", P.On, function(on) P.On = on say("Perintah chat " .. (on and "NYALA" or "MATI")) end)
 toggle(pgCtl, "Tampilkan hasil di chat (lokal)", P.Echo, function(on) P.Echo = on end)
 input(pgCtl, "Kotak perintah (Enter)", "/w 10", "", function(text)
@@ -1157,6 +1222,7 @@ local function report()
         "hook chat: " .. (P.Hooked and "terpasang" or ("GAGAL (" .. tostring(P.HookErr) .. ")"))
             .. " | panggilan lewat hook: " .. P.HookCalls,
         "jalur perintah terakhir: " .. tostring(P.ChatVia or "-"),
+        "kotak chat game: " .. (ChatBox.tb and ChatBox.tb:GetFullName() or "TIDAK KETEMU"),
         "game: " .. refsText(),
         "world: " .. tostring(worldName()) .. " | channel chat world: " .. (ch and ch:GetFullName() or "TIDAK"),
         "WorldChannels: " .. (TextChatService:FindFirstChild("WorldChannels") and "ada" or "TIDAK")
@@ -1267,7 +1333,7 @@ task.spawn(function()
     hookNet()
     if not P.alive then return end
     subTitle.Text = "v" .. VERSION .. " · " .. (worldName() or "Growblox")
-    say(Ref.World and (P.Hooked and "Siap. Ketik /help di chat" or "Siap. Hook chat tidak tersedia, pakai kotak perintah")
+    say(Ref.World and "Siap. Ketik /proxy di chat untuk daftar perintah"
         or "World belum ketemu. Masuk world lalu tekan Hubungkan ulang")
     -- world berganti: ikut perbarui nama world di judul, cari ulang kalau world hilang
     while P.alive do
