@@ -14,7 +14,7 @@
         telepon, bank, wrench pull/kick/ban) tidak dibuat.
 ]]
 
-local VERSION = "1.0"
+local VERSION = "1.1"
 
 local G = (getgenv and getgenv()) or _G
 if type(G.SkyPProxy) == "table" and type(G.SkyPProxy.stop) == "function" then
@@ -42,6 +42,12 @@ local P = {
     Busy = false,
     Found = nil,
     Ran = 0,
+    ChatVia = nil,   -- jalur kirim chat game yang terdeteksi (v1.1)
+    Sniff = false,   -- rekam panggilan kirim ke server (debug)
+    SniffLog = {},
+    SniffSeen = {},
+    Errors = {},     -- error yang terjadi (untuk laporan debug)
+    HookCalls = 0,   -- jumlah panggilan yang lewat hook (bukti hook hidup)
     Last = "-",
     Log = {},
     conns = {},
@@ -229,9 +235,15 @@ local function scanLoops()
 end
 
 local function connect()
-    scanModules()
-    if not refsDone() then scanGc() end
-    if not refsDone() then scanLoops() end
+    for _, step in ipairs({ { "modul", scanModules }, { "getgc", scanGc }, { "loop", scanLoops } }) do
+        if step[1] == "modul" or not refsDone() then
+            local ok, err = pcall(step[2])
+            if not ok then
+                table.insert(P.Errors, "scan " .. step[1] .. ": " .. tostring(err))
+                if #P.Errors > 20 then table.remove(P.Errors, 1) end
+            end
+        end
+    end
     return Ref.World ~= nil
 end
 
@@ -559,13 +571,14 @@ new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = U
 
 local pages, tabBtns = {}, {}
 local function makePage(name)
+    -- v1.1: 4 tab -> tombol tab lebih sempit
     local pg = new("ScrollingFrame", { Name = name, Size = UDim2.new(1, -20, 1, -94), Position = UDim2.fromOffset(10, 86),
         BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = C.a1,
         CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false }, main)
     new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, pg)
     new("UIPadding", { PaddingBottom = UDim.new(0, 6), PaddingRight = UDim.new(0, 4) }, pg)
     pages[name] = pg
-    local b = new("TextButton", { Size = UDim2.fromOffset(98, 24), BackgroundColor3 = C.item, Text = name,
+    local b = new("TextButton", { Size = UDim2.fromOffset(74, 24), BackgroundColor3 = C.item, Text = name,
         TextColor3 = C.sub, Font = Enum.Font.GothamBold, TextSize = 12, AutoButtonColor = false }, tabBar)
     corner(b, 6)
     tabBtns[name] = b
@@ -659,6 +672,7 @@ end
 local pgCtl = makePage("Kontrol")
 local pgCmd = makePage("Perintah")
 local pgLog = makePage("Log")
+local pgDbg = makePage("Debug")
 
 local _, statusText = card(pgCtl, "Status", "Menghubungkan ke game...")
 local _, logText = card(pgLog, "Hasil terakhir", "-")
@@ -927,7 +941,11 @@ local function run(msg)
     task.spawn(function()
         local ok, err = pcall(fn, args)
         P.Busy = false
-        if not ok then say("Error /" .. name .. ": " .. tostring(err)) end
+        if not ok then
+            table.insert(P.Errors, "/" .. name .. ": " .. tostring(err))
+            if #P.Errors > 20 then table.remove(P.Errors, 1) end
+            say("Error /" .. name .. ": " .. tostring(err))
+        end
     end)
 end
 
@@ -939,13 +957,42 @@ do
         local wrapC = type(newcclosure) == "function" and newcclosure or function(f) return f end
         local isOurs = type(checkcaller) == "function" and checkcaller or function() return false end
         local old
+        -- v1.1: chat game bisa lewat TextChannel:SendAsync ATAU RemoteEvent/RemoteFunction milik game.
+        -- Semua jalur kirim diperiksa: argumen teks yang cocok dengan perintah -> dicegat.
+        local SEND = { SendAsync = true, FireServer = true, InvokeServer = true }
+        local CLS = { TextChannel = true, RemoteEvent = true, UnreliableRemoteEvent = true, RemoteFunction = true }
         old = hookmetamethod(game, "__namecall", wrapC(function(self, ...)
-            if P.alive and P.On and not isOurs() and getnamecallmethod() == "SendAsync"
-                and typeof(self) == "Instance" and self.ClassName == "TextChannel" then
-                local msg = ...
-                if parse(msg) then
-                    task.spawn(run, msg)
-                    return nil -- tidak dikirim ke server
+            if P.alive and not isOurs() then
+                local m = getnamecallmethod()
+                if SEND[m] and typeof(self) == "Instance" and CLS[self.ClassName] then
+                    P.HookCalls += 1
+                    local n = select("#", ...)
+                    if P.On then
+                        for i = 1, math.min(n, 4) do
+                            local a = select(i, ...)
+                            if type(a) == "string" and parse(a) then
+                                P.ChatVia = m .. " " .. self.Name .. " (argumen " .. i .. ")"
+                                task.spawn(run, a)
+                                return nil -- tidak dikirim ke server
+                            end
+                        end
+                    end
+                    if P.Sniff and #P.SniffLog < 40 then
+                        local key = m .. self.Name
+                        local seen = P.SniffSeen[key] or 0
+                        if seen < 3 then
+                            P.SniffSeen[key] = seen + 1
+                            local parts = {}
+                            for i = 1, math.min(n, 4) do
+                                local a = select(i, ...)
+                                local ta = typeof(a)
+                                parts[#parts + 1] = ta == "string" and ('"' .. string.sub(a, 1, 40) .. '"')
+                                    or (ta == "number" or ta == "boolean") and tostring(a) or ta
+                            end
+                            table.insert(P.SniffLog, ("%s %s.%s(%s)"):format(self.ClassName,
+                                self.Parent and self.Parent.Name or "?", m .. " " .. self.Name, table.concat(parts, ", ")))
+                        end
+                    end
                 end
             end
             return old(self, ...)
@@ -1008,6 +1055,71 @@ button(pgLog, "Hapus log", function()
     table.clear(P.Log)
     paintStatus()
 end)
+
+-- =====================================================================
+-- DEBUG (v1.1)
+-- =====================================================================
+local _, dbgText = card(pgDbg, "Cara debug",
+    "1. Tekan <b>Rekam cara game kirim chat</b>, lalu ketik pesan biasa di chat game, mis. <b>tes123</b> (jangan perintah).\n"
+    .. "2. Tekan <b>Salin laporan debug</b> dan tempel ke developer.\n"
+    .. "Laporan berisi fungsi executor, koneksi ke game, dan jalur yang dipakai game untuk mengirim chat.")
+local function report()
+    local function has(f) return type(f) == "function" and "ada" or "TIDAK" end
+    local exe = "?"
+    pcall(function() if identifyexecutor then exe = table.concat({ identifyexecutor() }, " ") end end)
+    local ch = nil
+    pcall(function() ch = worldChannel() end)
+    local lines = {
+        "-- SkyP Proxy v" .. VERSION .. " laporan debug",
+        "executor: " .. exe,
+        ("fungsi: hookmetamethod %s | getnamecallmethod %s | checkcaller %s | newcclosure %s"):format(
+            has(hookmetamethod), has(getnamecallmethod), has(checkcaller), has(newcclosure)),
+        ("fungsi: getgc %s | getconnections %s | getloadedmodules %s | getupvalues %s | setclipboard %s"):format(
+            has(getgc), has(getconnections), has(getloadedmodules), has((debug and debug.getupvalues) or getupvalues),
+            has(setclipboard or toclipboard)),
+        "hook chat: " .. (P.Hooked and "terpasang" or ("GAGAL (" .. tostring(P.HookErr) .. ")"))
+            .. " | panggilan lewat hook: " .. P.HookCalls,
+        "jalur perintah terakhir: " .. tostring(P.ChatVia or "-"),
+        "game: " .. refsText(),
+        "world: " .. tostring(worldName()) .. " | channel chat world: " .. (ch and ch:GetFullName() or "TIDAK"),
+        "WorldChannels: " .. (TextChatService:FindFirstChild("WorldChannels") and "ada" or "TIDAK")
+            .. " | ChatVersion: " .. tostring(TextChatService.ChatVersion),
+        "prefix: " .. P.Prefix .. " | perintah chat: " .. (P.On and "nyala" or "mati"),
+        "-- error:",
+    }
+    for _, e in ipairs(P.Errors) do lines[#lines + 1] = "   " .. e end
+    if #P.Errors == 0 then lines[#lines + 1] = "   (tidak ada)" end
+    lines[#lines + 1] = "-- rekaman panggilan kirim ke server (" .. #P.SniffLog .. "):"
+    for _, l in ipairs(P.SniffLog) do lines[#lines + 1] = "   " .. l end
+    lines[#lines + 1] = "-- log:"
+    for i = math.max(1, #P.Log - 10), #P.Log do lines[#lines + 1] = "   " .. P.Log[i] end
+    return table.concat(lines, "\n")
+end
+local sniffBtn
+sniffBtn = button(pgDbg, "Rekam cara game kirim chat (20 dtk)", function()
+    if P.Sniff then return end
+    table.clear(P.SniffLog)
+    table.clear(P.SniffSeen)
+    P.Sniff = true
+    sniffBtn.Text = "Merekam... ketik pesan biasa di chat game"
+    say("Merekam 20 detik: ketik pesan biasa (mis. tes123) di chat game")
+    task.delay(20, function()
+        P.Sniff = false
+        if sniffBtn.Parent then sniffBtn.Text = "Rekam cara game kirim chat (20 dtk)" end
+        say("Rekaman selesai: " .. #P.SniffLog .. " panggilan. Tekan Salin laporan debug")
+    end)
+end)
+button(pgDbg, "Salin laporan debug", function()
+    local txt = report()
+    local clip = setclipboard or toclipboard
+    if type(clip) == "function" and pcall(clip, txt) then
+        say("Laporan debug disalin, tempel ke developer")
+    else
+        print(txt)
+        say("Executor tidak bisa menyalin: laporan dicetak di console (F9)")
+    end
+end)
+button(pgDbg, "Tes perintah: /locks (lewat kotak, tanpa chat)", function() run(P.Prefix .. "locks") end)
 
 for name, b in pairs(tabBtns) do
     b.MouseButton1Click:Connect(function() showPage(name) end)
