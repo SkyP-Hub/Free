@@ -1,26 +1,119 @@
-if makefolder and not isfolder("Fian") then makefolder("Fian") end
-local pats = { "rainy", "snowy", "warp", "digital rain", "weather" }
-local function hit(s)
-  s = s:lower()
-  for _, p in ipairs(pats) do if s:find(p, 1, true) then return true end end
-end
-local out = {}
-for _, m in ipairs(getloadedmodules()) do
-  local ok, v = pcall(require, m)
-  if ok and type(v) == "table" then
-    local found = {}
-    local function scan(t, d, pre)
-      if d > 3 or #found > 15 then return end
-      for k, val in pairs(t) do
-        if type(k) == "string" and hit(k) then found[#found+1] = pre .. k end
-        if type(val) == "string" and #val < 60 and hit(val) then found[#found+1] = pre .. tostring(k) .. "=" .. val end
-        if type(val) == "table" and val ~= t then pcall(scan, val, d + 1, pre .. tostring(k) .. ".") end
-      end
-    end
-    pcall(scan, v, 1, "")
-    if #found > 0 then out[#out+1] = m:GetFullName() .. " -> " .. table.concat(found, ", ") end
+local lp = game.Players.LocalPlayer
+local hasFS = type(writefile) == "function"
+if hasFS and type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("Fian") then pcall(makefolder, "Fian") end
+pcall(function()
+  for _, p in ipairs({ (gethui and gethui()) or nil, game:GetService("CoreGui"), lp.PlayerGui }) do
+    local o = p and p:FindFirstChild("WxDbg2"); if o then o:Destroy() end
   end
+end)
+
+local sg = Instance.new("ScreenGui")
+sg.Name = "WxDbg2"; sg.ResetOnSpawn = false; sg.DisplayOrder = 1000; sg.IgnoreGuiInset = true
+if not pcall(function() sg.Parent = (gethui and gethui()) or game:GetService("CoreGui") end) then sg.Parent = lp.PlayerGui end
+local main = Instance.new("Frame")
+main.Size = UDim2.fromScale(0.8, 0.85); main.Position = UDim2.fromScale(0.1, 0.075)
+main.BackgroundColor3 = Color3.fromRGB(20, 22, 30); main.BorderSizePixel = 0; main.Parent = sg
+local row = Instance.new("Frame")
+row.Size = UDim2.new(1, -10, 0, 34); row.Position = UDim2.fromOffset(5, 5); row.BackgroundTransparency = 1; row.Parent = main
+local lay = Instance.new("UIListLayout"); lay.FillDirection = Enum.FillDirection.Horizontal; lay.Padding = UDim.new(0, 4); lay.Parent = row
+local sc = Instance.new("ScrollingFrame")
+sc.Size = UDim2.new(1, -10, 1, -48); sc.Position = UDim2.fromOffset(5, 43)
+sc.BackgroundColor3 = Color3.fromRGB(12, 13, 18); sc.BorderSizePixel = 0
+sc.AutomaticCanvasSize = Enum.AutomaticSize.Y; sc.CanvasSize = UDim2.new(); sc.ScrollBarThickness = 5; sc.Parent = main
+local box = Instance.new("TextLabel")
+box.Size = UDim2.new(1, -8, 0, 0); box.AutomaticSize = Enum.AutomaticSize.Y; box.BackgroundTransparency = 1
+box.TextColor3 = Color3.new(1, 1, 1); box.Font = Enum.Font.Code; box.TextSize = 11; box.TextWrapped = true
+box.TextXAlignment = Enum.TextXAlignment.Left; box.TextYAlignment = Enum.TextYAlignment.Top; box.Parent = sc
+
+local full = ""
+local function show(t)
+  full = t
+  box.Text = #t > 9000 and (t:sub(1, 9000) .. "\n...(dipotong, tekan Salin untuk lengkap)") or t
 end
-local text = table.concat(out, "\n")
-print(text)
-writefile("Fian/weather_modules.txt", text)
+local function btn(txt, w, fn)
+  local b = Instance.new("TextButton")
+  b.Size = UDim2.fromOffset(w, 34); b.BackgroundColor3 = Color3.fromRGB(62, 150, 255)
+  b.TextColor3 = Color3.new(1, 1, 1); b.Font = Enum.Font.GothamBold; b.TextSize = 12; b.Text = txt; b.Parent = row
+  b.MouseButton1Click:Connect(function()
+    local ok, err = pcall(fn)
+    if not ok then show("ERROR: " .. tostring(err)) end
+  end)
+end
+
+local function ser(v, d, max, ind)
+  local t = type(v)
+  if t == "string" then return '"' .. v:sub(1, 50) .. '"' end
+  if t == "function" then
+    local n = "?"
+    pcall(function() local i = debug.getinfo(v); n = tostring(i.name or "?") .. "/" .. tostring(i.numparams) end)
+    return "fn<" .. n .. ">"
+  end
+  if t ~= "table" then return tostring(v) end
+  if d >= max then return "{...}" end
+  local keys = {}
+  for k in pairs(v) do keys[#keys + 1] = k end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  local parts = {}
+  for i, k in ipairs(keys) do
+    if i > 25 then parts[#parts + 1] = ind .. "  ...(+" .. (#keys - 25) .. " lagi)" break end
+    local okv, sv = pcall(ser, v[k], d + 1, max, ind .. "  ")
+    parts[#parts + 1] = ind .. "  " .. tostring(k) .. " = " .. (okv and sv or "?")
+  end
+  return "{\n" .. table.concat(parts, "\n") .. "\n" .. ind .. "}"
+end
+
+btn("Dump weather", 110, function()
+  if type(getloadedmodules) ~= "function" then show("Tidak ada getloadedmodules") return end
+  local mods = {}
+  for _, m in ipairs(getloadedmodules()) do mods[m.Name] = m end
+  local function get(n)
+    local m = mods[n]
+    if not m then return nil end
+    local ok, v = pcall(require, m)
+    return ok and v or nil
+  end
+  local out = {}
+  local function add(title, fn)
+    local ok, r = pcall(fn)
+    out[#out + 1] = "=== " .. title .. " ===\n" .. (ok and tostring(r) or ("ERR " .. tostring(r)))
+  end
+
+  local W = get("geEA0CTgC")
+  add("geEA0CTgC definisi weather", function()
+    local ks = {}
+    for k in pairs(W) do ks[#ks + 1] = tostring(k) end
+    local s = { "jumlah key: " .. #ks .. "\ncontoh: " .. table.concat(ks, ",", 1, math.min(#ks, 40)) }
+    for _, id in ipairs({ 984, 1364, 1750, 3252 }) do
+      s[#s + 1] = id .. " = " .. ser(W[id] or W[tostring(id)], 0, 3, "")
+    end
+    return table.concat(s, "\n")
+  end)
+
+  local M = get("iSkJ5LWYh")
+  add("iSkJ5LWYh (MOODS) isi atas", function() return ser(M, 0, 2, "") end)
+  add("MOODS.snow detail", function() return ser(M.MOODS.snow, 0, 3, "") end)
+
+  local N = get("tKaaiho5wz")
+  add("tKaaiho5wz (net) weather", function()
+    return "EVENTS.WeatherChanged = " .. ser(N.EVENTS.WeatherChanged, 0, 2, "")
+      .. "\nNOTE[9] = " .. ser(N.NOTE[9], 0, 2, "")
+      .. "\nCALLS.EditWeather = " .. ser(N.CALLS.EditWeather, 0, 2, "")
+      .. "\nASK[19] = " .. ser(N.ASK[19], 0, 2, "")
+      .. "\nkey atas: " .. ser(N, 0, 1, "")
+  end)
+
+  local I = get("eR8DWXu5AEWq")
+  add("eR8DWXu5AEWq item weather", function()
+    return "934 = " .. ser(I[934], 0, 2, "") .. "\n984 = " .. ser(I[984], 0, 2, "") .. "\n932 = " .. ser(I[932], 0, 2, "")
+  end)
+
+  local text = table.concat(out, "\n\n")
+  if hasFS then pcall(writefile, "Fian/weather_dump3.txt", text) end
+  show(text)
+end)
+btn("Salin", 60, function()
+  if type(setclipboard) == "function" then setclipboard(full); show("Tersalin.\n\n" .. full)
+  else show("Tidak ada setclipboard, screenshot saja.") end
+end)
+btn("X", 34, function() sg:Destroy() end)
+show("Siap. Tekan 'Dump weather'.")
