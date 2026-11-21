@@ -1,0 +1,67 @@
+local LABEL = "A" -- ganti "B" untuk run kedua
+local lp = game.Players.LocalPlayer
+local root = lp.PlayerGui
+if makefolder and not isfolder("Fian") then makefolder("Fian") end
+
+local snap = {}
+local function pathOf(o)
+  local parts, cur = {}, o
+  while cur and cur ~= root do
+    local idx = 1
+    for _, s in ipairs(cur.Parent:GetChildren()) do
+      if s == cur then break end
+      if s.Name == cur.Name then idx += 1 end
+    end
+    table.insert(parts, 1, cur.Name .. "#" .. idx)
+    cur = cur.Parent
+  end
+  return table.concat(parts, "/")
+end
+
+local function walk(node, depth)
+  for _, c in ipairs(node:GetChildren()) do
+    if (c:IsA("GuiObject") or c:IsA("LayerCollector")) and not c.Name:find("^SkyP") then
+      local t = { c.ClassName }
+      pcall(function()
+        if c:IsA("GuiObject") then
+          t[#t+1] = "vis=" .. tostring(c.Visible)
+          t[#t+1] = "bg=" .. tostring(c.BackgroundColor3)
+          t[#t+1] = "bgt=" .. string.format("%.2f", c.BackgroundTransparency)
+        end
+        if c:IsA("ImageLabel") or c:IsA("ImageButton") then
+          t[#t+1] = "img=" .. tostring(c.Image)
+          t[#t+1] = "imgc=" .. tostring(c.ImageColor3)
+        end
+      end)
+      snap[pathOf(c)] = table.concat(t, " ")
+      if c.Name ~= "Tiles" and c.Name ~= "PlayerView" and depth < 5 then walk(c, depth + 1) end
+    end
+  end
+end
+walk(root, 1)
+
+local lines = {}
+for p, d in pairs(snap) do lines[#lines+1] = p .. "\t" .. d end
+table.sort(lines)
+writefile("Fian/weather_snap_" .. LABEL .. ".txt", table.concat(lines, "\n"))
+
+if LABEL == "B" and isfile("Fian/weather_snap_A.txt") then
+  local old = {}
+  for line in readfile("Fian/weather_snap_A.txt"):gmatch("[^\n]+") do
+    local p, d = line:match("^(.-)\t(.*)$")
+    if p then old[p] = d end
+  end
+  local diff = {}
+  for p, d in pairs(snap) do
+    if old[p] == nil then diff[#diff+1] = "NEW  " .. p .. " | " .. d
+    elseif old[p] ~= d then diff[#diff+1] = "CHG  " .. p .. "\n   A: " .. old[p] .. "\n   B: " .. d end
+  end
+  for p in pairs(old) do
+    if snap[p] == nil then diff[#diff+1] = "GONE " .. p end
+  end
+  table.sort(diff)
+  writefile("Fian/weather_diff.txt", table.concat(diff, "\n"))
+  print("selisih:", #diff, "-> Fian/weather_diff.txt")
+else
+  print("snapshot", LABEL, "tersimpan:", #lines, "objek")
+end
