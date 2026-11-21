@@ -1,67 +1,149 @@
-local LABEL = "A" -- ganti "B" untuk run kedua
 local lp = game.Players.LocalPlayer
 local root = lp.PlayerGui
-if makefolder and not isfolder("Fian") then makefolder("Fian") end
+local hasFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+if hasFS and type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("Fian") then pcall(makefolder, "Fian") end
 
-local snap = {}
-local function pathOf(o)
-  local parts, cur = {}, o
-  while cur and cur ~= root do
-    local idx = 1
-    for _, s in ipairs(cur.Parent:GetChildren()) do
-      if s == cur then break end
-      if s.Name == cur.Name then idx += 1 end
-    end
-    table.insert(parts, 1, cur.Name .. "#" .. idx)
-    cur = cur.Parent
+pcall(function()
+  for _, p in ipairs({ (gethui and gethui()) or nil, game:GetService("CoreGui"), root }) do
+    local o = p and p:FindFirstChild("WxDbg"); if o then o:Destroy() end
   end
-  return table.concat(parts, "/")
+end)
+
+local sg = Instance.new("ScreenGui")
+sg.Name = "WxDbg"; sg.ResetOnSpawn = false; sg.DisplayOrder = 1000; sg.IgnoreGuiInset = true
+if not pcall(function() sg.Parent = (gethui and gethui()) or game:GetService("CoreGui") end) then sg.Parent = root end
+
+local main = Instance.new("Frame")
+main.Size = UDim2.fromScale(0.72, 0.8); main.Position = UDim2.fromScale(0.14, 0.1)
+main.BackgroundColor3 = Color3.fromRGB(20, 22, 30); main.BorderSizePixel = 0; main.Parent = sg
+
+local row = Instance.new("Frame")
+row.Size = UDim2.new(1, -10, 0, 34); row.Position = UDim2.fromOffset(5, 5)
+row.BackgroundTransparency = 1; row.Parent = main
+local lay = Instance.new("UIListLayout")
+lay.FillDirection = Enum.FillDirection.Horizontal; lay.Padding = UDim.new(0, 4); lay.Parent = row
+
+local sc = Instance.new("ScrollingFrame")
+sc.Size = UDim2.new(1, -10, 1, -48); sc.Position = UDim2.fromOffset(5, 43)
+sc.BackgroundColor3 = Color3.fromRGB(12, 13, 18); sc.BorderSizePixel = 0
+sc.AutomaticCanvasSize = Enum.AutomaticSize.Y; sc.CanvasSize = UDim2.new(); sc.ScrollBarThickness = 5
+sc.Parent = main
+local box = Instance.new("TextLabel")
+box.Size = UDim2.new(1, -8, 0, 0); box.AutomaticSize = Enum.AutomaticSize.Y
+box.BackgroundTransparency = 1; box.TextColor3 = Color3.new(1, 1, 1)
+box.Font = Enum.Font.Code; box.TextSize = 12; box.TextWrapped = true
+box.TextXAlignment = Enum.TextXAlignment.Left; box.TextYAlignment = Enum.TextYAlignment.Top
+box.Text = "Siap. Tekan tombol di atas."; box.Parent = sc
+
+local lastFull = ""
+local function show(t)
+  lastFull = t
+  box.Text = #t > 7000 and (string.sub(t, 1, 7000) .. "\n...(dipotong, lengkap ada di tombol Salin / file)") or t
+end
+local function btn(txt, w, fn)
+  local b = Instance.new("TextButton")
+  b.Size = UDim2.fromOffset(w, 34); b.BackgroundColor3 = Color3.fromRGB(62, 150, 255)
+  b.TextColor3 = Color3.new(1, 1, 1); b.Font = Enum.Font.GothamBold; b.TextSize = 12
+  b.Text = txt; b.Parent = row
+  b.MouseButton1Click:Connect(function()
+    local ok, err = pcall(fn)
+    if not ok then show("ERROR: " .. tostring(err)) end
+  end)
 end
 
-local function walk(node, depth)
-  for _, c in ipairs(node:GetChildren()) do
-    if (c:IsA("GuiObject") or c:IsA("LayerCollector")) and not c.Name:find("^SkyP") then
-      local t = { c.ClassName }
-      pcall(function()
-        if c:IsA("GuiObject") then
-          t[#t+1] = "vis=" .. tostring(c.Visible)
-          t[#t+1] = "bg=" .. tostring(c.BackgroundColor3)
-          t[#t+1] = "bgt=" .. string.format("%.2f", c.BackgroundTransparency)
-        end
-        if c:IsA("ImageLabel") or c:IsA("ImageButton") then
-          t[#t+1] = "img=" .. tostring(c.Image)
-          t[#t+1] = "imgc=" .. tostring(c.ImageColor3)
-        end
-      end)
-      snap[pathOf(c)] = table.concat(t, " ")
-      if c.Name ~= "Tiles" and c.Name ~= "PlayerView" and depth < 5 then walk(c, depth + 1) end
+local snap
+local function snapshot()
+  local s = {}
+  local function pathOf(o)
+    local parts, cur = {}, o
+    while cur and cur ~= root do
+      local idx = 1
+      for _, x in ipairs(cur.Parent:GetChildren()) do
+        if x == cur then break end
+        if x.Name == cur.Name then idx += 1 end
+      end
+      table.insert(parts, 1, cur.Name .. "#" .. idx)
+      cur = cur.Parent
+    end
+    return table.concat(parts, "/")
+  end
+  local function walk(node, depth)
+    for _, c in ipairs(node:GetChildren()) do
+      if (c:IsA("GuiObject") or c:IsA("LayerCollector")) and c.Name ~= "WxDbg" and not c.Name:find("^SkyP") then
+        local t = { c.ClassName }
+        pcall(function()
+          if c:IsA("GuiObject") then
+            t[#t + 1] = "vis=" .. tostring(c.Visible)
+            t[#t + 1] = "bg=" .. tostring(c.BackgroundColor3)
+            t[#t + 1] = "bgt=" .. string.format("%.2f", c.BackgroundTransparency)
+          end
+          if c:IsA("ImageLabel") or c:IsA("ImageButton") then
+            t[#t + 1] = "img=" .. tostring(c.Image)
+            t[#t + 1] = "imgc=" .. tostring(c.ImageColor3)
+          end
+        end)
+        s[pathOf(c)] = table.concat(t, " ")
+        if c.Name ~= "Tiles" and c.Name ~= "PlayerView" and depth < 5 then walk(c, depth + 1) end
+      end
     end
   end
+  walk(root, 1)
+  return s
 end
-walk(root, 1)
 
-local lines = {}
-for p, d in pairs(snap) do lines[#lines+1] = p .. "\t" .. d end
-table.sort(lines)
-writefile("Fian/weather_snap_" .. LABEL .. ".txt", table.concat(lines, "\n"))
+btn("A: normal", 90, function()
+  snap = snapshot()
+  local n = 0; for _ in pairs(snap) do n += 1 end
+  show("Snapshot A tersimpan di memori: " .. n .. " objek.\nSekarang ubah weather lewat machine, lalu tekan 'B: selisih'.")
+end)
 
-if LABEL == "B" and isfile("Fian/weather_snap_A.txt") then
-  local old = {}
-  for line in readfile("Fian/weather_snap_A.txt"):gmatch("[^\n]+") do
-    local p, d = line:match("^(.-)\t(.*)$")
-    if p then old[p] = d end
+btn("B: selisih", 100, function()
+  if not snap then show("Tekan 'A: normal' dulu.") return end
+  local new, diff = snapshot(), {}
+  for p, d in pairs(new) do
+    if snap[p] == nil then diff[#diff + 1] = "NEW  " .. p .. " | " .. d
+    elseif snap[p] ~= d then diff[#diff + 1] = "CHG  " .. p .. "\n  A: " .. snap[p] .. "\n  B: " .. d end
   end
-  local diff = {}
-  for p, d in pairs(snap) do
-    if old[p] == nil then diff[#diff+1] = "NEW  " .. p .. " | " .. d
-    elseif old[p] ~= d then diff[#diff+1] = "CHG  " .. p .. "\n   A: " .. old[p] .. "\n   B: " .. d end
-  end
-  for p in pairs(old) do
-    if snap[p] == nil then diff[#diff+1] = "GONE " .. p end
-  end
+  for p in pairs(snap) do if new[p] == nil then diff[#diff + 1] = "GONE " .. p end end
   table.sort(diff)
-  writefile("Fian/weather_diff.txt", table.concat(diff, "\n"))
-  print("selisih:", #diff, "-> Fian/weather_diff.txt")
-else
-  print("snapshot", LABEL, "tersimpan:", #lines, "objek")
-end
+  local text = "Selisih: " .. #diff .. "\n\n" .. table.concat(diff, "\n")
+  if hasFS then pcall(writefile, "Fian/weather_diff.txt", text) end
+  show(text)
+end)
+
+btn("Scan modul", 90, function()
+  if type(getloadedmodules) ~= "function" then show("Executor tidak punya getloadedmodules.") return end
+  local pats = { "rainy", "snowy", "warp", "digital rain", "weather" }
+  local function hit(s)
+    s = s:lower()
+    for _, p in ipairs(pats) do if s:find(p, 1, true) then return true end end
+  end
+  local out = {}
+  for _, m in ipairs(getloadedmodules()) do
+    local ok, v = pcall(require, m)
+    if ok and type(v) == "table" then
+      local found = {}
+      local function scan(t, d, pre)
+        if d > 3 or #found > 15 then return end
+        for k, val in pairs(t) do
+          if type(k) == "string" and hit(k) then found[#found + 1] = pre .. k end
+          if type(val) == "string" and #val < 60 and hit(val) then found[#found + 1] = pre .. tostring(k) .. "=" .. val end
+          if type(val) == "table" and val ~= t then pcall(scan, val, d + 1, pre .. tostring(k) .. ".") end
+        end
+      end
+      pcall(scan, v, 1, "")
+      if #found > 0 then out[#out + 1] = m:GetFullName() .. " -> " .. table.concat(found, ", ") end
+    end
+  end
+  local text = #out > 0 and table.concat(out, "\n") or "Tidak ada modul yang cocok."
+  if hasFS then pcall(writefile, "Fian/weather_modules.txt", text) end
+  show(text)
+end)
+
+btn("Salin", 55, function()
+  if type(setclipboard) == "function" then setclipboard(lastFull); show("Tersalin ke clipboard.\n\n" .. lastFull)
+  else show("Executor tidak punya setclipboard. Screenshot saja layar ini.") end
+end)
+btn("X", 34, function() sg:Destroy() end)
+
+show("Siap. Urutan:\n1) 'A: normal' saat weather normal\n2) ubah weather lewat machine\n3) 'B: selisih'\n4) 'Scan modul'\n\nHasil muncul di sini.")
