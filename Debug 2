@@ -1,0 +1,26 @@
+if makefolder and not isfolder("Fian") then makefolder("Fian") end
+local pats = { "rainy", "snowy", "warp", "digital rain", "weather" }
+local function hit(s)
+  s = s:lower()
+  for _, p in ipairs(pats) do if s:find(p, 1, true) then return true end end
+end
+local out = {}
+for _, m in ipairs(getloadedmodules()) do
+  local ok, v = pcall(require, m)
+  if ok and type(v) == "table" then
+    local found = {}
+    local function scan(t, d, pre)
+      if d > 3 or #found > 15 then return end
+      for k, val in pairs(t) do
+        if type(k) == "string" and hit(k) then found[#found+1] = pre .. k end
+        if type(val) == "string" and #val < 60 and hit(val) then found[#found+1] = pre .. tostring(k) .. "=" .. val end
+        if type(val) == "table" and val ~= t then pcall(scan, val, d + 1, pre .. tostring(k) .. ".") end
+      end
+    end
+    pcall(scan, v, 1, "")
+    if #found > 0 then out[#out+1] = m:GetFullName() .. " -> " .. table.concat(found, ", ") end
+  end
+end
+local text = table.concat(out, "\n")
+print(text)
+writefile("Fian/weather_modules.txt", text)
